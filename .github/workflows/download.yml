@@ -1,0 +1,27 @@
+name: Download XAUUSD Fixed Months
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: |
+          pip install requests zstandard pandas tqdm
+
+      - name: Create downloader script
+        run: |
+          cat > download.py <<'PY'
+          import os, csv, lzma, struct, calendar, time, hashlib, zipfile
+          from datetime import datetime, timedelta, timezone
+          import requests
+          import z
