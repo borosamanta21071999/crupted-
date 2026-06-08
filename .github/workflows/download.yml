@@ -1,4 +1,4 @@
-name: Download XAUUSD Fixed Months
+name: Download XAUUSD Fixed Months V2
 
 on:
   workflow_dispatch:
@@ -9,19 +9,84 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install packages
-        run: |
-          pip install requests zstandard pandas tqdm
+      - run: pip install requests zstandard pandas
 
-      - name: Create downloader script
-        run: |
-          cat > download.py <<'PY'
-          import os, csv, lzma, struct, calendar, time, hashlib, zipfile
+      - run: |
+          python - <<'PY'
+          import os, csv, lzma, struct, calendar, time, hashlib, zipfile, io
           from datetime import datetime, timedelta, timezone
-          import requests
-          import z
+          import requests, zstandard as zstd, pandas as pd
+
+          SYMBOL="XAUUSD"
+          BASE="https://datafeed.dukascopy.com/datafeed"
+          OUT="XAUUSD_FIXED_MONTHLY"
+          os.makedirs(OUT, exist_ok=True)
+          MONTHS=[(2021,10),(2021,11),(2021,12)] + [(2023,m) for m in range(2,13)] + [(2024,6),(2024,12),(2025,12)]
+
+          def get_hour(y,m,d,h):
+              url=f"{BASE}/{SYMBOL}/{y}/{m-1:02d}/{d:02d}/{h:02d}h_ticks.bi5"
+              for a in range(5):
+                  try:
+                      r=requests.get(url,timeout=30)
+                      if r.status_code==404:
+                          return []
+                      raw=lzma.decompress(r.content)
+                      rows=[]
+                      for i in range(0,len(raw),20):
+                          b=raw[i:i+20]
+                          if len(b)!=20: continue
+                          ms,ask,bid,av,bv=struct.unpack(">IIIff",b)
+                          dt=datetime(y,m,d,h,tzinfo=timezone.utc)+timedelta(milliseconds=ms)
+                          rows.append([dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], bid/1000, ask/1000])
+                      return rows
+                  except Exception:
+                      time.sleep(2+a)
+              return []
+
+          def sha(path):
+              h=hashlib.sha256()
+              with open(path,"rb") as f:
+                  for c in iter(lambda:f.read(1024*1024),b""):
+                      h.update(c)
+              return h.hexdigest()
+
+          report=[]
+          for y,m in MONTHS:
+              print("START",y,m)
+              path=f"{OUT}/XAUUSD_{y}_{m:02d}.csv.zst"
+              count=0; first=None; last=None
+              cctx=zstd.ZstdCompressor(level=10)
+              with open(path,"wb") as f:
+                  with cctx.stream_writer(f) as zw:
+                      w=csv.writer(io.TextIOWrapper(zw,encoding="utf-8",newline=""))
+                      w.writerow(["time","bid","ask"])
+                      for d in range(1,calendar.monthrange(y,m)[1]+1):
+                          print(f"{y}-{m:02d}-{d:02d}")
+                          for h in range(24):
+                              for row in get_hour(y,m,d,h):
+                                  w.writerow(row)
+                                  count+=1
+                                  if first is None: first=row[0]
+                                  last=row[0]
+              report.append({"month":f"{y}-{m:02d}","ticks":count,"first":first,"last":last,"file":os.path.basename(path),"sha256":sha(path)})
+              print("DONE",y,m,count,first,last)
+
+          pd.DataFrame(report).to_csv(f"{OUT}/VERIFY_REPORT.csv",index=False)
+
+          with zipfile.ZipFile("XAUUSD_FIXED_MONTHLY.zip","w",zipfile.ZIP_DEFLATED) as z:
+              for root,dirs,files in os.walk(OUT):
+                  for fn in files:
+                      p=os.path.join(root,fn)
+                      z.write(p,p)
+
+          print("ALL DONE")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD_FIXED_MONTHLY
+          path: XAUUSD_FIXED_MONTHLY.zip
