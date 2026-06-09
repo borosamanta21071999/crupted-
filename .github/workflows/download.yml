@@ -1,12 +1,34 @@
-name: Download XAUUSD Fixed Months V2
+name: XAUUSD Safe Monthly + Final ZIP
 
 on:
   workflow_dispatch:
 
 jobs:
-  download:
+  month:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { y: 2021, m: 10 }
+          - { y: 2021, m: 11 }
+          - { y: 2021, m: 12 }
+          - { y: 2023, m: 2 }
+          - { y: 2023, m: 3 }
+          - { y: 2023, m: 4 }
+          - { y: 2023, m: 5 }
+          - { y: 2023, m: 6 }
+          - { y: 2023, m: 7 }
+          - { y: 2023, m: 8 }
+          - { y: 2023, m: 9 }
+          - { y: 2023, m: 10 }
+          - { y: 2023, m: 11 }
+          - { y: 2023, m: 12 }
+          - { y: 2024, m: 6 }
+          - { y: 2024, m: 12 }
+          - { y: 2025, m: 12 }
 
     steps:
       - uses: actions/setup-python@v5
@@ -21,18 +43,21 @@ jobs:
           from datetime import datetime, timedelta, timezone
           import requests, zstandard as zstd, pandas as pd
 
+          Y=${{ matrix.y }}
+          M=${{ matrix.m }}
           SYMBOL="XAUUSD"
           BASE="https://datafeed.dukascopy.com/datafeed"
-          OUT="XAUUSD_FIXED_MONTHLY"
+          OUT=f"XAUUSD_{Y}_{M:02d}"
           os.makedirs(OUT, exist_ok=True)
-          MONTHS=[(2021,10),(2021,11),(2021,12)] + [(2023,m) for m in range(2,13)] + [(2024,6),(2024,12),(2025,12)]
+          failed=[]
 
           def get_hour(y,m,d,h):
               url=f"{BASE}/{SYMBOL}/{y}/{m-1:02d}/{d:02d}/{h:02d}h_ticks.bi5"
-              for a in range(5):
+              for a in range(3):
                   try:
-                      r=requests.get(url,timeout=30)
+                      r=requests.get(url,timeout=25)
                       if r.status_code==404:
+                          failed.append(f"{y}-{m:02d}-{d:02d} {h:02d}:404")
                           return []
                       raw=lzma.decompress(r.content)
                       rows=[]
@@ -44,49 +69,77 @@ jobs:
                           rows.append([dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], bid/1000, ask/1000])
                       return rows
                   except Exception:
-                      time.sleep(2+a)
+                      time.sleep(3)
+              failed.append(f"{y}-{m:02d}-{d:02d} {h:02d}:ERROR")
               return []
 
-          def sha(path):
+          def sha(p):
               h=hashlib.sha256()
-              with open(path,"rb") as f:
+              with open(p,"rb") as f:
                   for c in iter(lambda:f.read(1024*1024),b""):
                       h.update(c)
               return h.hexdigest()
 
-          report=[]
-          for y,m in MONTHS:
-              print("START",y,m)
-              path=f"{OUT}/XAUUSD_{y}_{m:02d}.csv.zst"
-              count=0; first=None; last=None
-              cctx=zstd.ZstdCompressor(level=10)
-              with open(path,"wb") as f:
-                  with cctx.stream_writer(f) as zw:
-                      w=csv.writer(io.TextIOWrapper(zw,encoding="utf-8",newline=""))
-                      w.writerow(["time","bid","ask"])
-                      for d in range(1,calendar.monthrange(y,m)[1]+1):
-                          print(f"{y}-{m:02d}-{d:02d}")
-                          for h in range(24):
-                              for row in get_hour(y,m,d,h):
-                                  w.writerow(row)
-                                  count+=1
-                                  if first is None: first=row[0]
-                                  last=row[0]
-              report.append({"month":f"{y}-{m:02d}","ticks":count,"first":first,"last":last,"file":os.path.basename(path),"sha256":sha(path)})
-              print("DONE",y,m,count,first,last)
+          path=f"{OUT}/XAUUSD_{Y}_{M:02d}.csv.zst"
+          count=0; first=None; last=None
+          cctx=zstd.ZstdCompressor(level=10)
 
-          pd.DataFrame(report).to_csv(f"{OUT}/VERIFY_REPORT.csv",index=False)
+          with open(path,"wb") as f:
+              with cctx.stream_writer(f) as zw:
+                  text=io.TextIOWrapper(zw,encoding="utf-8",newline="")
+                  w=csv.writer(text)
+                  w.writerow(["time","bid","ask"])
+                  for d in range(1,calendar.monthrange(Y,M)[1]+1):
+                      print(f"DAY {Y}-{M:02d}-{d:02d}", flush=True)
+                      for h in range(24):
+                          for row in get_hour(Y,M,d,h):
+                              w.writerow(row)
+                              count+=1
+                              if first is None: first=row[0]
+                              last=row[0]
+                  text.flush()
 
-          with zipfile.ZipFile("XAUUSD_FIXED_MONTHLY.zip","w",zipfile.ZIP_DEFLATED) as z:
+          pd.DataFrame([{
+              "month":f"{Y}-{M:02d}",
+              "ticks":count,
+              "first_time":first,
+              "last_time":last,
+              "failed_hours":len(failed),
+              "file":os.path.basename(path),
+              "sha256":sha(path)
+          }]).to_csv(f"{OUT}/VERIFY_REPORT.csv",index=False)
+
+          with open(f"{OUT}/FAILED_HOURS.txt","w") as f:
+              f.write("\n".join(failed))
+
+          with zipfile.ZipFile(f"XAUUSD_{Y}_{M:02d}.zip","w",zipfile.ZIP_DEFLATED) as z:
               for root,dirs,files in os.walk(OUT):
                   for fn in files:
                       p=os.path.join(root,fn)
                       z.write(p,p)
 
-          print("ALL DONE")
+          print("DONE", Y, M, count, first, last, flush=True)
           PY
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: XAUUSD_FIXED_MONTHLY
-          path: XAUUSD_FIXED_MONTHLY.zip
+          name: month_${{ matrix.y }}_${{ matrix.m }}
+          path: XAUUSD_${{ matrix.y }}_${{ matrix.m }}.zip
+
+  final:
+    needs: month
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all_months
+
+      - run: |
+          zip -r XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK.zip all_months
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DOWNLOAD_THIS_XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK
+          path: XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK.zip
