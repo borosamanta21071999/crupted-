@@ -1,4 +1,4 @@
-name: XAUUSD Safe Monthly + Final ZIP
+name: XAUUSD Missing 9 Months Fix
 
 on:
   workflow_dispatch:
@@ -12,9 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { y: 2021, m: 10 }
-          - { y: 2021, m: 11 }
-          - { y: 2021, m: 12 }
           - { y: 2023, m: 2 }
           - { y: 2023, m: 3 }
           - { y: 2023, m: 4 }
@@ -23,12 +20,7 @@ jobs:
           - { y: 2023, m: 7 }
           - { y: 2023, m: 8 }
           - { y: 2023, m: 9 }
-          - { y: 2023, m: 10 }
-          - { y: 2023, m: 11 }
-          - { y: 2023, m: 12 }
           - { y: 2024, m: 6 }
-          - { y: 2024, m: 12 }
-          - { y: 2025, m: 12 }
 
     steps:
       - uses: actions/setup-python@v5
@@ -39,7 +31,7 @@ jobs:
 
       - run: |
           python - <<'PY'
-          import os, csv, lzma, struct, calendar, time, hashlib, zipfile, io
+          import os, csv, lzma, struct, calendar, time, zipfile, io
           from datetime import datetime, timedelta, timezone
           import requests, zstandard as zstd, pandas as pd
 
@@ -57,7 +49,7 @@ jobs:
                   try:
                       r=requests.get(url,timeout=25)
                       if r.status_code==404:
-                          failed.append(f"{y}-{m:02d}-{d:02d} {h:02d}:404")
+                          failed.append(url)
                           return []
                       raw=lzma.decompress(r.content)
                       rows=[]
@@ -70,15 +62,8 @@ jobs:
                       return rows
                   except Exception:
                       time.sleep(3)
-              failed.append(f"{y}-{m:02d}-{d:02d} {h:02d}:ERROR")
+              failed.append(url)
               return []
-
-          def sha(p):
-              h=hashlib.sha256()
-              with open(p,"rb") as f:
-                  for c in iter(lambda:f.read(1024*1024),b""):
-                      h.update(c)
-              return h.hexdigest()
 
           path=f"{OUT}/XAUUSD_{Y}_{M:02d}.csv.zst"
           count=0; first=None; last=None
@@ -105,14 +90,14 @@ jobs:
               "first_time":first,
               "last_time":last,
               "failed_hours":len(failed),
-              "file":os.path.basename(path),
-              "sha256":sha(path)
+              "file":os.path.basename(path)
           }]).to_csv(f"{OUT}/VERIFY_REPORT.csv",index=False)
 
           with open(f"{OUT}/FAILED_HOURS.txt","w") as f:
               f.write("\n".join(failed))
 
-          with zipfile.ZipFile(f"XAUUSD_{Y}_{M:02d}.zip","w",zipfile.ZIP_DEFLATED) as z:
+          zipname=f"XAUUSD_{Y}_{M:02d}.zip"
+          with zipfile.ZipFile(zipname,"w",zipfile.ZIP_DEFLATED) as z:
               for root,dirs,files in os.walk(OUT):
                   for fn in files:
                       p=os.path.join(root,fn)
@@ -125,7 +110,7 @@ jobs:
         if: always()
         with:
           name: month_${{ matrix.y }}_${{ matrix.m }}
-          path: XAUUSD_${{ matrix.y }}_${{ matrix.m }}.zip
+          path: XAUUSD_*.zip
 
   final:
     needs: month
@@ -134,12 +119,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: all_months
+          path: all_missing_months
 
-      - run: |
-          zip -r XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK.zip all_months
+      - run: zip -r XAUUSD_MISSING_9_MONTHS_FIXED.zip all_missing_months
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DOWNLOAD_THIS_XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK
-          path: XAUUSD_ALL_FIXED_MONTHS_ONE_CLICK.zip
+          name: DOWNLOAD_THIS_XAUUSD_MISSING_9_MONTHS_FIXED
+          path: XAUUSD_MISSING_9_MONTHS_FIXED.zip
